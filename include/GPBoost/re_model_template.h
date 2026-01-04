@@ -6424,72 +6424,193 @@ namespace GPBoost {
 		/*!
 		* \brief Initialize required matrices used when use_woodbury_identity_==true
 		*/
-		void InitializeMatricesForUseWoodburyIdentity() {
-			CHECK(use_woodbury_identity_);
-			Zt_ = std::map<data_size_t, sp_mat_t>();
-			ZtZ_ = std::map<data_size_t, sp_mat_t>();
-			cum_num_rand_eff_ = std::map<data_size_t, std::vector<data_size_t>>();
-			Zj_square_sum_ = std::map<data_size_t, std::vector<double>>();
-			ZtZj_ = std::map<data_size_t, std::vector<sp_mat_t>>();
-			for (const auto& cluster_i : unique_clusters_) {
-				std::vector<data_size_t> cum_num_rand_eff_cluster_i(num_comps_total_ + 1);
-				cum_num_rand_eff_cluster_i[0] = 0;
-				if (linear_kernel_use_woodbury_identity_) {
-					std::shared_ptr<RECompGP<T_mat>> re_comp = std::dynamic_pointer_cast<RECompGP<T_mat>>(re_comps_[cluster_i][0][ind_intercept_gp_]);
-					den_mat_t coords = re_comp->GetCoords();
-					Zt_.insert({ cluster_i, coords.transpose().sparseView()});
-					ZtZ_.insert({ cluster_i, (coords.transpose() * coords).sparseView()});
-					cum_num_rand_eff_cluster_i[1] = re_comp->GetDimCoords();
-					cum_num_rand_eff_.insert({ cluster_i, cum_num_rand_eff_cluster_i });
-					std::vector<double> Zj_square_sum_cluster_i = { coords.squaredNorm() };
-					Zj_square_sum_.insert({ cluster_i, Zj_square_sum_cluster_i });
-					std::vector<sp_mat_t> ZtZj_cluster_i = { ZtZ_[cluster_i] };
-					ZtZj_.insert({ cluster_i, ZtZj_cluster_i });
-				}//end linear_kernel_use_woodbury_identity_
-				else {// only grouped REs
-					//Determine number of rows and non-zero entries of Z
-					int non_zeros = 0;
-					int ncols = 0;
-					for (int j = 0; j < num_comps_total_; ++j) {
-						sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
-						ncols += (int)Z_j->cols();
-						non_zeros += (int)Z_j->nonZeros();
-						cum_num_rand_eff_cluster_i[j + 1] = ncols;
-					}
-					//Create matrix Z and calculate sum(Z_j^2) = trace(Z_j^T * Z_j)
-					std::vector<Triplet_t> triplets;
-					triplets.reserve(non_zeros);
-					std::vector<double> Zj_square_sum_cluster_i(num_comps_total_);
-					int ncol_prev = 0;
-					for (int j = 0; j < num_comps_total_; ++j) {
-						sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
-						for (int k = 0; k < Z_j->outerSize(); ++k) {
-							for (sp_mat_t::InnerIterator it(*Z_j, k); it; ++it) {
-								triplets.emplace_back(it.row(), ncol_prev + it.col(), it.value());
-							}
-						}
-						ncol_prev += (int)Z_j->cols();
-						Zj_square_sum_cluster_i[j] = Z_j->squaredNorm();
-					}
-					sp_mat_t Z_cluster_i(num_data_per_cluster_[cluster_i], ncols);
-					Z_cluster_i.setFromTriplets(triplets.begin(), triplets.end());
-					sp_mat_t Zt_cluster_i = Z_cluster_i.transpose();
-					sp_mat_t ZtZ_cluster_i = Zt_cluster_i * Z_cluster_i;
-					//Calculate Z^T * Z_j
-					std::vector<sp_mat_t> ZtZj_cluster_i(num_comps_total_);
-					for (int j = 0; j < num_comps_total_; ++j) {
-						sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
-						ZtZj_cluster_i[j] = Zt_cluster_i * (*Z_j);
-					}
-					//Save all quantities
-					Zt_.insert({ cluster_i, Zt_cluster_i });
-					ZtZ_.insert({ cluster_i, ZtZ_cluster_i });
-					cum_num_rand_eff_.insert({ cluster_i, cum_num_rand_eff_cluster_i });
-					Zj_square_sum_.insert({ cluster_i, Zj_square_sum_cluster_i });
-					ZtZj_.insert({ cluster_i, ZtZj_cluster_i });
-				}//end !linear_kernel_use_woodbury_identity_
-			}
-		}//end InitializeMatricesForUseWoodburyIdentity
+
+    void InitializeMatricesForUseWoodburyIdentity() {
+      CHECK(use_woodbury_identity_);
+
+      // Reset containers (same as before)
+      Zt_.clear();
+      ZtZ_.clear();
+      cum_num_rand_eff_.clear();
+      Zj_square_sum_.clear();
+      ZtZj_.clear();
+
+      for (const auto& cluster_i : unique_clusters_) {
+        std::vector<data_size_t> cum_num_rand_eff_cluster_i(num_comps_total_ + 1);
+        cum_num_rand_eff_cluster_i[0] = 0;
+
+
+        if (linear_kernel_use_woodbury_identity_) {
+          std::shared_ptr<RECompGP<T_mat>> re_comp =
+            std::dynamic_pointer_cast<RECompGP<T_mat>>(re_comps_[cluster_i][0][ind_intercept_gp_]);
+
+          den_mat_t coords = re_comp->GetCoords();
+
+          // Build sparse quantities
+
+          sp_mat_t Zt_cluster_i = coords.transpose().sparseView();
+          sp_mat_t ZtZ_cluster_i = (coords.transpose() * coords).sparseView();
+
+          cum_num_rand_eff_cluster_i[1] = re_comp->GetDimCoords();
+
+          std::vector<double> Zj_square_sum_cluster_i = { coords.squaredNorm() };
+          std::vector<sp_mat_t> ZtZj_cluster_i = { ZtZ_cluster_i }; // copy here is OK (small vs your grouped RE case)
+
+          // IMPORTANT: avoid copies on insertion
+          Zt_.try_emplace(cluster_i, std::move(Zt_cluster_i));
+          ZtZ_.try_emplace(cluster_i, std::move(ZtZ_cluster_i));
+          cum_num_rand_eff_.try_emplace(cluster_i, std::move(cum_num_rand_eff_cluster_i));
+          Zj_square_sum_.try_emplace(cluster_i, std::move(Zj_square_sum_cluster_i));
+          ZtZj_.try_emplace(cluster_i, std::move(ZtZj_cluster_i));
+        }
+        else { // only grouped REs
+          // Determine number of columns and non-zero entries of concatenated Z
+          int non_zeros = 0;
+          int ncols = 0;
+
+          for (int j = 0; j < num_comps_total_; ++j) {
+            sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
+            ncols += static_cast<int>(Z_j->cols());
+            non_zeros += static_cast<int>(Z_j->nonZeros());
+            cum_num_rand_eff_cluster_i[j + 1] = static_cast<data_size_t>(ncols);
+          }
+
+          // Create triplets for concatenated Z
+          std::vector<Triplet_t> triplets;
+          triplets.reserve(static_cast<size_t>(non_zeros));
+
+          std::vector<double> Zj_square_sum_cluster_i(num_comps_total_);
+          int ncol_prev = 0;
+
+          for (int j = 0; j < num_comps_total_; ++j) {
+            sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
+
+            for (int k = 0; k < Z_j->outerSize(); ++k) {
+              for (typename sp_mat_t::InnerIterator it(*Z_j, k); it; ++it) {
+                triplets.emplace_back(it.row(), ncol_prev + it.col(), it.value());
+              }
+            }
+
+            ncol_prev += static_cast<int>(Z_j->cols());
+            Zj_square_sum_cluster_i[j] = Z_j->squaredNorm();
+          }
+
+
+          // Build Z (cluster)
+          sp_mat_t Z_cluster_i(num_data_per_cluster_[cluster_i], ncols);
+          Z_cluster_i.setFromTriplets(triplets.begin(), triplets.end());
+
+          // FREE triplets ASAP to reduce peak memory (VERY important in your case)
+          std::vector<Triplet_t>().swap(triplets);
+
+          // Compute derived matrices
+          sp_mat_t Zt_cluster_i = Z_cluster_i.transpose();
+          sp_mat_t ZtZ_cluster_i = Zt_cluster_i * Z_cluster_i;
+
+          // We no longer need Z_cluster_i after ZtZ and ZtZj are computed,
+          // but ZtZj below still needs Zt_cluster_i and each Z_j.
+          // Z_cluster_i can be freed now to reduce peak:
+          Z_cluster_i.resize(0, 0);
+          Z_cluster_i.data().squeeze(); // (optional) if available; if not, remove
+
+          // std::vector<sp_mat_t> ZtZj_cluster_i(num_comps_total_);
+
+          // for (int j = 0; j < num_comps_total_; ++j) {
+          //   sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
+          //   ZtZj_cluster_i[j] = Zt_cluster_i * (*Z_j);
+          // }
+        // Важно: перед slicing лучше сделать compressed (часто уменьшает лишние аллокации)
+          ZtZ_cluster_i.makeCompressed();
+
+          std::vector<sp_mat_t> ZtZj_cluster_i(num_comps_total_);
+          for (int j = 0; j < num_comps_total_; ++j) {
+            const int col_start = static_cast<int>(cum_num_rand_eff_cluster_i[j]);
+            const int col_end   = static_cast<int>(cum_num_rand_eff_cluster_i[j + 1]);
+            const int pj = col_end - col_start;
+
+            // Z^T * Z_j == (Z^T Z)[:, cols_of_component_j]
+            ZtZj_cluster_i[j] = ZtZ_cluster_i.middleCols(col_start, pj);
+          }
+
+
+          // Save all quantities WITHOUT copying huge matrices:
+
+          //  - try_emplace + std::move prevents deep copy and should remove your bad_alloc peak.
+          Zt_.try_emplace(cluster_i, std::move(Zt_cluster_i));
+          ZtZ_.try_emplace(cluster_i, std::move(ZtZ_cluster_i));
+          cum_num_rand_eff_.try_emplace(cluster_i, std::move(cum_num_rand_eff_cluster_i));
+          Zj_square_sum_.try_emplace(cluster_i, std::move(Zj_square_sum_cluster_i));
+          ZtZj_.try_emplace(cluster_i, std::move(ZtZj_cluster_i));
+        }
+      }
+    }
+
+		// void InitializeMatricesForUseWoodburyIdentity() {
+		// 	CHECK(use_woodbury_identity_);
+		// 	Zt_ = std::map<data_size_t, sp_mat_t>();
+		// 	ZtZ_ = std::map<data_size_t, sp_mat_t>();
+		// 	cum_num_rand_eff_ = std::map<data_size_t, std::vector<data_size_t>>();
+		// 	Zj_square_sum_ = std::map<data_size_t, std::vector<double>>();
+		// 	ZtZj_ = std::map<data_size_t, std::vector<sp_mat_t>>();
+		// 	for (const auto& cluster_i : unique_clusters_) {
+		// 		std::vector<data_size_t> cum_num_rand_eff_cluster_i(num_comps_total_ + 1);
+		// 		cum_num_rand_eff_cluster_i[0] = 0;
+		// 		if (linear_kernel_use_woodbury_identity_) {
+		// 			std::shared_ptr<RECompGP<T_mat>> re_comp = std::dynamic_pointer_cast<RECompGP<T_mat>>(re_comps_[cluster_i][0][ind_intercept_gp_]);
+		// 			den_mat_t coords = re_comp->GetCoords();
+		// 			Zt_.insert({ cluster_i, coords.transpose().sparseView()});
+		// 			ZtZ_.insert({ cluster_i, (coords.transpose() * coords).sparseView()});
+		// 			cum_num_rand_eff_cluster_i[1] = re_comp->GetDimCoords();
+		// 			cum_num_rand_eff_.insert({ cluster_i, cum_num_rand_eff_cluster_i });
+		// 			std::vector<double> Zj_square_sum_cluster_i = { coords.squaredNorm() };
+		// 			Zj_square_sum_.insert({ cluster_i, Zj_square_sum_cluster_i });
+		// 			std::vector<sp_mat_t> ZtZj_cluster_i = { ZtZ_[cluster_i] };
+		// 			ZtZj_.insert({ cluster_i, ZtZj_cluster_i });
+		// 		}//end linear_kernel_use_woodbury_identity_
+		// 		else {// only grouped REs
+		// 			//Determine number of rows and non-zero entries of Z
+		// 			int non_zeros = 0;
+		// 			int ncols = 0;
+		// 			for (int j = 0; j < num_comps_total_; ++j) {
+		// 				sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
+		// 				ncols += (int)Z_j->cols();
+		// 				non_zeros += (int)Z_j->nonZeros();
+		// 				cum_num_rand_eff_cluster_i[j + 1] = ncols;
+		// 			}
+		// 			//Create matrix Z and calculate sum(Z_j^2) = trace(Z_j^T * Z_j)
+		// 			std::vector<Triplet_t> triplets;
+		// 			triplets.reserve(non_zeros);
+		// 			std::vector<double> Zj_square_sum_cluster_i(num_comps_total_);
+		// 			int ncol_prev = 0;
+		// 			for (int j = 0; j < num_comps_total_; ++j) {
+		// 				sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
+		// 				for (int k = 0; k < Z_j->outerSize(); ++k) {
+		// 					for (sp_mat_t::InnerIterator it(*Z_j, k); it; ++it) {
+		// 						triplets.emplace_back(it.row(), ncol_prev + it.col(), it.value());
+		// 					}
+		// 				}
+		// 				ncol_prev += (int)Z_j->cols();
+		// 				Zj_square_sum_cluster_i[j] = Z_j->squaredNorm();
+		// 			}
+		// 			sp_mat_t Z_cluster_i(num_data_per_cluster_[cluster_i], ncols);
+		// 			Z_cluster_i.setFromTriplets(triplets.begin(), triplets.end());
+		// 			sp_mat_t Zt_cluster_i = Z_cluster_i.transpose();
+		// 			sp_mat_t ZtZ_cluster_i = Zt_cluster_i * Z_cluster_i;
+		// 			//Calculate Z^T * Z_j
+		// 			std::vector<sp_mat_t> ZtZj_cluster_i(num_comps_total_);
+		// 			for (int j = 0; j < num_comps_total_; ++j) {
+		// 				sp_mat_t* Z_j = re_comps_[cluster_i][0][j]->GetZ();
+		// 				ZtZj_cluster_i[j] = Zt_cluster_i * (*Z_j);
+		// 			}
+		// 			//Save all quantities
+		// 			Zt_.insert({ cluster_i, Zt_cluster_i });
+		// 			ZtZ_.insert({ cluster_i, ZtZ_cluster_i });
+		// 			cum_num_rand_eff_.insert({ cluster_i, cum_num_rand_eff_cluster_i });
+		// 			Zj_square_sum_.insert({ cluster_i, Zj_square_sum_cluster_i });
+		// 			ZtZj_.insert({ cluster_i, ZtZj_cluster_i });
+		// 		}//end !linear_kernel_use_woodbury_identity_
+		// 	}
+		// }//end InitializeMatricesForUseWoodburyIdentity
 
 		/*!
 		* \brief Initialize identity matrices required for Gaussian data
