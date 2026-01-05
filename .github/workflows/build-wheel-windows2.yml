@@ -1,0 +1,60 @@
+name: Build Windows wheel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13.7"]   # можно "3.13" если 3.13.7 вдруг недоступна
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup MSVC dev cmd
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Show tool versions
+        run: |
+          python -V
+          where cl
+          where msbuild
+          cmake --version
+
+      - name: Install build deps
+        run: python -m pip install -U pip setuptools wheel
+
+      - name: Build wheel (precompile)
+        working-directory: python-package
+        run: python setup.py bdist_wheel --precompile
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpboost-wheel-cp313-win_amd64
+          path: python-package/dist/*.whl
+
+      - name: Upload compilation log (if fail)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpboost-compilation-log
+          path: C:\Users\runneradmin\GPBoost_compilation.log
