@@ -1,0 +1,83 @@
+name: Build Windows wheel (GPBoost)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-wheel:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Upgrade pip + build deps
+        shell: pwsh
+        run: |
+          python -m pip install -U pip setuptools wheel build
+
+      # Важно: BUILD_SHARED_LIBS=ON чтобы точно пытался собрать DLL, а не только *.lib
+      - name: Configure CMake (shared lib)
+        shell: pwsh
+        run: |
+          cmake -S . -B build -A x64 -DBUILD_SHARED_LIBS=ON
+
+      - name: Build C++ library (Release)
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Locate and copy GPBoost DLL into python-package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Searching for GPBoost DLL under build/ ..."
+          # Ищем как lib_gpboost.dll, так и gpboost.dll (и любые вариации с gpboost в имени)
+          $dll = Get-ChildItem -Path build -Recurse -File |
+            Where-Object { $_.Name -match '^(?i)(lib_)?gpboost.*\.dll$' } |
+            Sort-Object FullName |
+            Select-Object -First 1
+
+          if (-not $dll) {
+            Write-Host "DLL not found. GPBoost-related artifacts under build/:"
+            Get-ChildItem -Path build -Recurse -File |
+              Where-Object { $_.Name -match '(?i)gpboost' } |
+              Select-Object FullName
+
+            $libs = Get-ChildItem -Path build -Recurse -File -Filter "*gpboost*.lib" -ErrorAction SilentlyContinue
+            if ($libs) {
+              Write-Host "Found *.lib (static). That usually means DLL wasn't built."
+              Write-Host "Make sure shared build is enabled (BUILD_SHARED_LIBS=ON) and project doesn't force static-only."
+              $libs | Select-Object FullName
+            }
+
+            throw "GPBoost DLL was not produced by the build."
+          }
+
+          New-Item -ItemType Directory -Force -Path "python-package\gpboost" | Out-Null
+          Copy-Item $dll.FullName "python-package\gpboost\lib_gpboost.dll" -Force
+          Write-Host "Copied: $($dll.FullName) -> python-package\gpboost\lib_gpboost.dll"
+
+      - name: Build wheel
+        shell: pwsh
+        working-directory: python-package
+        run: |
+          python -m build --wheel
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpboost-win-py${{ matrix.python-version }}
+          path: python-package/dist/*.whl
